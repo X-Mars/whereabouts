@@ -5,11 +5,24 @@
 *.so
 *.dylib
 
+code-generator/
+vendor/*
+
 # Test binary, build with `go test -c`
 *.test
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
+.idea
+kind/
 
 bin/
 /github.com/
+
+.idea/
+
+#Claude 
+CLAUDE.local.md
+./claude
+
+e2e/.env

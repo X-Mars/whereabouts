@@ -13,7 +13,7 @@ Whereabouts can be used for both IPv4 & IPv6 addressing.
 
 CNI (Container Network Interface) plugins typically have a configuration element named `ipam`. CNI IPAM plugins can assign IP addresses, and Whereabouts assigns IP addresses within a range -- without having to use a DHCP server. 
 
-Whereabouts takes an address range, like `192.168.2.0/24` in CIDR notation, and will assign IP addresses within that range. In this case, it will assign IP addresses from `192.168.2.1` to `192.168.2.255`. When an IP address is assigned to a pod, Whereabouts tracks that IP address in a data store for the lifetime of that pod. When the pod is removed, Whereabouts then frees the address and makes it available to assign on subsequent requests. Whereabouts always assigns the lowest value address that's available in the range.
+Whereabouts takes an address range, like `192.168.2.0/24` in CIDR notation, and will assign IP addresses within that range. In this case, it will assign IP addresses from `192.168.2.1` to `192.168.2.254`. When an IP address is assigned to a pod, Whereabouts tracks that IP address in a data store for the lifetime of that pod. When the pod is removed, Whereabouts then frees the address and makes it available to assign on subsequent requests. Whereabouts always assigns the lowest value address that's available in the range.
 
 You can also specify ranges to exclude from assignment, so if for example you'd like to assign IP addresses within the range `192.168.2.0/24`, you can exclude IP addresses within it by adding them to an exclude list. For example, if you decide to exclude the range `192.168.2.0/28`, the first IP address assigned in the range will be `192.168.2.16`.
 
@@ -45,19 +45,17 @@ git clone https://github.com/k8snetworkplumbingwg/whereabouts && cd whereabouts
 kubectl apply \
     -f doc/crds/daemonset-install.yaml \
     -f doc/crds/whereabouts.cni.cncf.io_ippools.yaml \
-    -f doc/crds/whereabouts.cni.cncf.io_overlappingrangeipreservations.yaml
+    -f doc/crds/whereabouts.cni.cncf.io_overlappingrangeipreservations.yaml \
+    -f doc/crds/reconciler-deployment.yaml
 ```
 
 The daemonset installation requires Kubernetes Version 1.16 or later.
 
 ### Installing with helm 3
-You can also install multus and whereabouts with helm 3 (helm 2 is not supported)
+You can also install whereabouts with helm 3:
 
 ```
-git clone https://github.com/k8snetworkplumbingwg/helm-charts.git
-cd helm-charts
-helm upgrade --install multus ./multus  --namespace kube-system
-helm upgrade --install whereabouts ./whereabouts --namespace kube-system
+helm template whereabouts oci://ghcr.io/k8snetworkplumbingwg/whereabouts-chart --version <WHEREABOUTS_VERSION>
 
 ```
 
@@ -193,6 +191,39 @@ Similar to above, `ipRanges` can be used for configuring DualStack
       }
 }
 ```
+
+## Fast IPAM by Using Preallocated Node Slices [Experimental]
+
+**Enhance IPAM performance in large-scale Kubernetes environments by reducing IP allocation contention through node-based IP slicing.**
+
+### Fast IPAM Configuration
+
+```
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
+metadata:
+  name: whereabouts-fast-ipam
+spec:
+  config: '{
+    "cniVersion": "0.3.0",
+    "name": "whereaboutsexample",
+    "type": "macvlan",
+    "master": "eth0",
+    "mode": "bridge",
+    "ipam": {
+      "type": "whereabouts",
+      "range": "192.168.2.0/24",
+      "node_slice_size": "/22"
+    }
+  }'
+```
+
+This setup enables the fast IPAM feature to optimize IP allocation for nodes, improving network performance in clusters with high pod density. 
+Please note, you must run a whereabouts controller for this to work. Manifest can be found in doc/crds/node-slice-controller.yaml. 
+You must run your whereabouts daemonset, whereabouts controller in the same namespaces as your network-attachment-definitions. 
+The field in the example `node_slice_size` determines how large of a CIDR to allocate per node and the existence of the field is what triggers
+`Fast IPAM` mode.
+
 
 ## Core Parameters
 

@@ -1,3 +1,4 @@
+// Package config includes configuration utilities for whereabouts
 package config
 
 import (
@@ -9,7 +10,6 @@ import (
 	"strings"
 
 	cnitypes "github.com/containernetworking/cni/pkg/types"
-	types020 "github.com/containernetworking/cni/pkg/types/020"
 	"github.com/imdario/mergo"
 
 	netutils "k8s.io/utils/net"
@@ -41,7 +41,7 @@ func LoadIPAMConfig(bytes []byte, envArgs string, extraConfigPaths ...string) (*
 	}
 
 	if n.IPAM == nil {
-		return nil, "", fmt.Errorf("IPAM config missing 'ipam' key")
+		return nil, "", NewMissingIPAMConfigError()
 	} else if !isNetworkRelevant(n.IPAM) {
 		return nil, "", NewInvalidPluginError(n.IPAM.Type)
 	}
@@ -109,6 +109,7 @@ func LoadIPAMConfig(bytes []byte, envArgs string, extraConfigPaths ...string) (*
 		} else {
 			firstip, ipNet, err := netutils.ParseCIDRSloppy(n.IPAM.IPRanges[idx].Range)
 			if err != nil {
+				logging.Debugf("invalid cidr error on range %v, within ranges %v", n.IPAM.IPRanges[idx].Range, n.IPAM.IPRanges)
 				return nil, "", fmt.Errorf("invalid CIDR %s: %s", n.IPAM.IPRanges[idx].Range, err)
 			}
 			n.IPAM.IPRanges[idx].Range = ipNet.String()
@@ -211,7 +212,7 @@ func configureStatic(n *types.Net, args types.IPAMEnvArgs) error {
 
 	// CNI spec 0.2.0 and below supported only one v4 and v6 address
 	if numV4 > 1 || numV6 > 1 {
-		for _, v := range types020.SupportedVersions {
+		for _, v := range []string{"", "0.1.0", "0.2.0"} {
 			if n.CNIVersion == v {
 				return fmt.Errorf("CNI version %v does not support more than 1 address per family", n.CNIVersion)
 			}
@@ -317,6 +318,9 @@ func LoadIPAMConfiguration(bytes []byte, envArgs string, extraConfigPaths ...str
 			return nil, err
 		}
 
+		if len(pluginConfigList.Plugins) == 0 {
+			return nil, fmt.Errorf("NetworkAttachmentDefinition config list contains no plugins")
+		}
 		pluginConfigList.Plugins[0].CNIVersion = pluginConfig.CNIVersion
 		firstPluginBytes, err := json.Marshal(pluginConfigList.Plugins[0])
 		if err != nil {
@@ -356,6 +360,16 @@ func loadPluginConfig(bytes []byte) (*cnitypes.NetConf, error) {
 func isNetworkRelevant(ipamConfig *types.IPAMConfig) bool {
 	const relevantIPAMType = "whereabouts"
 	return ipamConfig.Type == relevantIPAMType
+}
+
+type MissingIPAMConfigError struct{}
+
+func NewMissingIPAMConfigError() *MissingIPAMConfigError {
+	return &MissingIPAMConfigError{}
+}
+
+func (e *MissingIPAMConfigError) Error() string {
+	return "IPAM config missing 'ipam' key"
 }
 
 type InvalidPluginError struct {

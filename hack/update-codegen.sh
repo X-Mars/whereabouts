@@ -18,13 +18,17 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-SCRIPT_ROOT=$(dirname "${BASH_SOURCE[0]}")/..
+SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]}")"
+SCRIPT_ROOT="${SCRIPT_DIR}/.."
+CODEGEN_PKG="${CODEGEN_PKG:-"${SCRIPT_ROOT}/bin/code-generator"}"
 
-bash ./vendor/k8s.io/code-generator/generate-groups.sh "client,informer,lister" \
-  github.com/k8snetworkplumbingwg/whereabouts/pkg/client \
-  github.com/k8snetworkplumbingwg/whereabouts/pkg/api \
-  whereabouts.cni.cncf.io:v1alpha1 \
-  --go-header-file "${SCRIPT_ROOT}"/hack/boilerplate.go.txt
+source "${CODEGEN_PKG}/kube_codegen.sh"
 
-cp -r github.com/k8snetworkplumbingwg/whereabouts/pkg/client/* pkg/client
+THIS_PKG="github.com/k8snetworkplumbingwg/whereabouts"
 
+kube::codegen::gen_client \
+    --with-watch \
+    --output-dir "${SCRIPT_ROOT}/pkg/generated" \
+    --output-pkg "${THIS_PKG}/pkg/generated" \
+    --boilerplate "${SCRIPT_ROOT}/hack/boilerplate.go.txt" \
+    "${SCRIPT_ROOT}/pkg/api"

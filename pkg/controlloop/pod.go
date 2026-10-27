@@ -13,6 +13,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -28,10 +29,10 @@ import (
 	"github.com/pkg/errors"
 
 	whereaboutsv1alpha1 "github.com/k8snetworkplumbingwg/whereabouts/pkg/api/whereabouts.cni.cncf.io/v1alpha1"
-	wbclientset "github.com/k8snetworkplumbingwg/whereabouts/pkg/client/clientset/versioned"
-	wbinformers "github.com/k8snetworkplumbingwg/whereabouts/pkg/client/informers/externalversions"
-	wblister "github.com/k8snetworkplumbingwg/whereabouts/pkg/client/listers/whereabouts.cni.cncf.io/v1alpha1"
 	"github.com/k8snetworkplumbingwg/whereabouts/pkg/config"
+	wbclientset "github.com/k8snetworkplumbingwg/whereabouts/pkg/generated/clientset/versioned"
+	wbinformers "github.com/k8snetworkplumbingwg/whereabouts/pkg/generated/informers/externalversions"
+	wblister "github.com/k8snetworkplumbingwg/whereabouts/pkg/generated/listers/whereabouts.cni.cncf.io/v1alpha1"
 	"github.com/k8snetworkplumbingwg/whereabouts/pkg/iphelpers"
 	"github.com/k8snetworkplumbingwg/whereabouts/pkg/logging"
 	wbclient "github.com/k8snetworkplumbingwg/whereabouts/pkg/storage/kubernetes"
@@ -73,7 +74,7 @@ type PodController struct {
 	netAttachDefLister      nadlister.NetworkAttachmentDefinitionLister
 	broadcaster             record.EventBroadcaster
 	recorder                record.EventRecorder
-	workqueue               workqueue.RateLimitingInterface
+	workqueue               workqueue.TypedRateLimitingInterface[*v1.Pod]
 	mountPath               string
 	cleanupFunc             garbageCollector
 }
@@ -108,9 +109,8 @@ func newPodController(k8sCoreClient kubernetes.Interface, wbClient wbclientset.I
 	networksInformer := netAttachDefInformer.Informer()
 	podsInformer := k8sPodFilteredInformer.Informer()
 
-	queue := workqueue.NewNamedRateLimitingQueue(
-		workqueue.DefaultControllerRateLimiter(),
-		ipReconcilerQueueName)
+	queue := workqueue.NewTypedRateLimitingQueue[*v1.Pod](
+		workqueue.DefaultTypedControllerRateLimiter[*v1.Pod]())
 
 	podsInformer.AddEventHandler(
 		cache.ResourceEventHandlerFuncs{
@@ -166,7 +166,7 @@ func (pc *PodController) processNextWorkItem() bool {
 	}
 	defer pc.workqueue.Done(queueItem)
 
-	pod := queueItem.(*v1.Pod)
+	pod := queueItem
 	err := pc.garbageCollectPodIPs(pod)
 	logging.Verbosef("result of garbage collecting pods: %+v", err)
 	pc.handleResult(pod, err)
@@ -223,19 +223,33 @@ func (pc *PodController) garbageCollectPodIPs(pod *v1.Pod) error {
 		for _, pool := range pools {
 			for allocationIndex, allocation := range pool.Spec.Allocations {
 				if allocation.PodRef == podID(podNamespace, podName) {
+					logging.Verbosef("Found an existing allocation: %+v", allocation)
+
+					// The allocation could belong to a new pod with the same name and namespace. Stateful set scenarios.
+					// The previous pod should be gone by the time a pod deletion event is received.
+					if newPod, err := pc.k8sClient.CoreV1().Pods(podNamespace).Get(context.TODO(), podName, metav1.GetOptions{}); err == nil {
+						if newPod.DeletionTimestamp == nil {
+							logging.Verbosef("A pod with the same name and namespace was found and is not marked for deletion. Skipping deallocation")
+							continue
+						}
+
+						logging.Verbosef("A pod with the same name and namespace was found and is marked for deletion. Cleaning up the stale allocation. DeletionTimestamp: %+v", newPod.DeletionTimestamp)
+					} else if !apierrors.IsNotFound(err) {
+						return fmt.Errorf("failed to get pod to verify allocation: %+v", err)
+					}
+
 					logging.Verbosef("stale allocation to cleanup: %+v", allocation)
 
-					client := *wbclient.NewKubernetesClient(nil, pc.k8sClient, 0)
-					wbClient := &wbclient.KubernetesIPAM{
-						Client: client,
-						Config: *ipamConfig,
+					client := *wbclient.NewKubernetesClient(pc.wbClient, pc.k8sClient)
+					k8sIPAM := &wbclient.KubernetesIPAM{
+						Config:      *ipamConfig,
+						ContainerID: allocation.ContainerID,
+						IfName:      allocation.IfName,
+						Namespace:   pool.Namespace,
+						Client:      client,
 					}
 
-					if err != nil {
-						logging.Debugf("error while generating the IPAM client: %v", err)
-						continue
-					}
-					if _, err := pc.cleanupFunc(context.TODO(), types.Deallocate, *ipamConfig, wbClient); err != nil {
+					if _, err := pc.cleanupFunc(context.TODO(), types.Deallocate, *ipamConfig, k8sIPAM); err != nil {
 						logging.Errorf("failed to cleanup allocation: %v", err)
 					}
 					if err := pc.addressGarbageCollected(pod, nad.GetName(), pool.Spec.Range, allocationIndex); err != nil {
@@ -245,7 +259,6 @@ func (pc *PodController) garbageCollectPodIPs(pod *v1.Pod) error {
 			}
 		}
 	}
-
 	return nil
 }
 
@@ -311,7 +324,7 @@ func (pc *PodController) addressGarbageCollected(pod *v1.Pod, networkName string
 		if err != nil {
 			return err
 		}
-		index, err := strconv.Atoi(allocationIndex)
+		index, err := strconv.ParseUint(allocationIndex, 10, 64)
 		if err != nil {
 			return err
 		}
@@ -320,7 +333,7 @@ func (pc *PodController) addressGarbageCollected(pod *v1.Pod, networkName string
 			v1.EventTypeNormal,
 			addressGarbageCollected,
 			"successful cleanup of IP address [%s] from network %s",
-			iphelpers.IPAddOffset(ip, uint64(index)),
+			iphelpers.IPAddOffset(ip, index),
 			networkName)
 	}
 	return nil
@@ -344,7 +357,7 @@ func (pc *PodController) addressGarbageCollectionFailed(pod *v1.Pod, err error) 
 	}
 }
 
-func onPodDelete(queue workqueue.RateLimitingInterface, obj interface{}) {
+func onPodDelete(queue workqueue.TypedRateLimitingInterface[*v1.Pod], obj interface{}) {
 	pod, err := podFromTombstone(obj)
 	if err != nil {
 		logging.Errorf("cannot create pod object from %v on pod delete: %v", obj, err)

@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -54,6 +55,7 @@ type IPAMConfig struct {
 	OmitRanges               []string             `json:"exclude,omitempty"`
 	DNS                      cnitypes.DNS         `json:"dns"`
 	Range                    string               `json:"range"`
+	NodeSliceSize            string               `json:"node_slice_size"`
 	RangeStart               net.IP               `json:"range_start,omitempty"`
 	RangeEnd                 net.IP               `json:"range_end,omitempty"`
 	GatewayStr               string               `json:"gateway"`
@@ -70,7 +72,7 @@ type IPAMConfig struct {
 	ConfigurationPath        string           `json:"configuration_path"`
 	PodName                  string
 	PodNamespace             string
-	NetworkName              string           `json:"network_name,omitempty"`
+	NetworkName              string `json:"network_name,omitempty"`
 }
 
 func (ic *IPAMConfig) UnmarshalJSON(data []byte) error {
@@ -81,6 +83,7 @@ func (ic *IPAMConfig) UnmarshalJSON(data []byte) error {
 		Datastore                string               `json:"datastore"`
 		Addresses                []Address            `json:"addresses,omitempty"`
 		IPRanges                 []RangeConfiguration `json:"ipRanges"`
+		NodeSliceSize            string               `json:"node_slice_size"`
 		OmitRanges               []string             `json:"exclude,omitempty"`
 		DNS                      cnitypes.DNS         `json:"dns"`
 		Range                    string               `json:"range"`
@@ -106,7 +109,7 @@ func (ic *IPAMConfig) UnmarshalJSON(data []byte) error {
 		ConfigurationPath        string           `json:"configuration_path"`
 		PodName                  string
 		PodNamespace             string
-		NetworkName              string           `json:"network_name,omitempty"`
+		NetworkName              string `json:"network_name,omitempty"`
 	}
 
 	ipamConfigAlias := IPAMConfigAlias{
@@ -128,6 +131,7 @@ func (ic *IPAMConfig) UnmarshalJSON(data []byte) error {
 		Range:                    ipamConfigAlias.Range,
 		RangeStart:               backwardsCompatibleIPAddress(ipamConfigAlias.RangeStart),
 		RangeEnd:                 backwardsCompatibleIPAddress(ipamConfigAlias.RangeEnd),
+		NodeSliceSize:            ipamConfigAlias.NodeSliceSize,
 		GatewayStr:               ipamConfigAlias.GatewayStr,
 		LeaderLeaseDuration:      ipamConfigAlias.LeaderLeaseDuration,
 		LeaderRenewDeadline:      ipamConfigAlias.LeaderRenewDeadline,
@@ -187,7 +191,8 @@ type Address struct {
 type IPReservation struct {
 	IP          net.IP `json:"ip"`
 	ContainerID string `json:"id"`
-	PodRef      string `json:"podref,omitempty"`
+	PodRef      string `json:"podref"`
+	IfName      string `json:"ifName"`
 	IsAllocated bool
 }
 
@@ -201,3 +206,5 @@ const (
 	// Deallocate operation identifier
 	Deallocate = 1
 )
+
+var ErrNoIPRanges = errors.New("no IP ranges in whereabouts config")

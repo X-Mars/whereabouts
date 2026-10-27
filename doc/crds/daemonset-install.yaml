@@ -1,3 +1,4 @@
+# Dont'forget to update deployment/whereabouts-chart/templates/daemonset.yaml as well
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -28,6 +29,7 @@ rules:
   resources:
   - ippools
   - overlappingrangeipreservations
+  - nodeslicepools
   verbs:
   - get
   - list
@@ -48,11 +50,14 @@ rules:
   verbs:
   - list
   - watch
+  - get
 - apiGroups: [""]
   resources:
   - nodes
   verbs:
   - get
+  - list
+  - watch
 - apiGroups: ["k8s.cni.cncf.io"]
   resources:
     - network-attachment-definitions
@@ -69,6 +74,19 @@ rules:
   - create
   - patch
   - update
+  - get
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: whereabouts-config
+  namespace: kube-system
+  annotations:
+    kubernetes.io/description: |
+      Configmap containing user customizable cronjob schedule
+data:
+  cron-expression: "30 4 * * *" # Default schedule is once per day at 4:30am. Users may configure this value to their liking.
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -101,8 +119,9 @@ spec:
         command: [ "/bin/sh" ]
         args:
           - -c
-          - >
-            SLEEP=false /install-cni.sh &&
+          - |
+            SLEEP=false source /install-cni.sh
+            /token-watcher.sh &
             /ip-control-loop -log-level debug
         image: ghcr.io/k8snetworkplumbingwg/whereabouts:latest
         env:

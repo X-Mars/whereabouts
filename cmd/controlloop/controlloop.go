@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"time"
+	"syscall"
 
-	gocron "github.com/go-co-op/gocron"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -18,13 +17,10 @@ import (
 	nadclient "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/clientset/versioned"
 	nadinformers "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/client/informers/externalversions"
 
-	wbclient "github.com/k8snetworkplumbingwg/whereabouts/pkg/client/clientset/versioned"
-	wbinformers "github.com/k8snetworkplumbingwg/whereabouts/pkg/client/informers/externalversions"
-	"github.com/k8snetworkplumbingwg/whereabouts/pkg/config"
 	"github.com/k8snetworkplumbingwg/whereabouts/pkg/controlloop"
+	wbclient "github.com/k8snetworkplumbingwg/whereabouts/pkg/generated/clientset/versioned"
+	wbinformers "github.com/k8snetworkplumbingwg/whereabouts/pkg/generated/informers/externalversions"
 	"github.com/k8snetworkplumbingwg/whereabouts/pkg/logging"
-	"github.com/k8snetworkplumbingwg/whereabouts/pkg/reconciler"
-	"github.com/k8snetworkplumbingwg/whereabouts/pkg/types"
 )
 
 const (
@@ -33,10 +29,8 @@ const (
 )
 
 const (
-	couldNotCreateController = 1
-	couldNotReadFlatfile     = 1
-	couldNotGetFlatIPAM      = 1
-	cronExpressionError      = 1
+	_ int = iota
+	couldNotCreateController
 )
 
 const (
@@ -45,16 +39,14 @@ const (
 
 func main() {
 	logLevel := flag.String("log-level", defaultLogLevel, "Specify the pod controller application logging level")
-	if logLevel != nil && logging.GetLoggingLevel().String() != *logLevel {
+	flag.Parse()
+	if logging.GetLoggingLevel().String() != *logLevel {
 		logging.SetLogLevel(*logLevel)
 	}
 	logging.SetLogStderr(true)
 
 	stopChan := make(chan struct{})
-	errorChan := make(chan error)
-	defer close(stopChan)
-	defer close(errorChan)
-	handleSignals(stopChan, os.Interrupt)
+	handleSignals(stopChan, os.Interrupt, syscall.SIGTERM)
 
 	networkController, err := newPodController(stopChan)
 	if err != nil {
@@ -65,33 +57,8 @@ func main() {
 	networkController.Start(stopChan)
 	defer networkController.Shutdown()
 
-	s := gocron.NewScheduler(time.UTC)
-	schedule := cronExpressionFromFlatFile()
-
-	_, err = s.Cron(schedule).Do(func() { // user configurable cron expression in install-cni.sh
-		reconciler.ReconcileIPs(errorChan)
-	})
-	if err != nil {
-		_ = logging.Errorf("error with cron expression schedule: %v", err)
-		os.Exit(cronExpressionError)
-	}
-
-	s.StartAsync()
-
-	for {
-		select {
-		case <-stopChan:
-			logging.Verbosef("shutting down network controller")
-			s.Stop()
-			return
-		case err := <-errorChan:
-			if err == nil {
-				logging.Verbosef("reconciler success")
-			} else {
-				logging.Verbosef("reconciler failure: %s", err)
-			}
-		}
-	}
+	<-stopChan
+	logging.Verbosef("shutting down network controller")
 }
 
 func handleSignals(stopChannel chan struct{}, signals ...os.Signal) {
@@ -99,7 +66,7 @@ func handleSignals(stopChannel chan struct{}, signals ...os.Signal) {
 	signal.Notify(signalChannel, signals...)
 	go func() {
 		<-signalChannel
-		stopChannel <- struct{}{}
+		close(stopChannel)
 	}()
 }
 
@@ -162,13 +129,4 @@ func newEventBroadcaster(k8sClientset kubernetes.Interface) record.EventBroadcas
 
 func newEventRecorder(broadcaster record.EventBroadcaster) record.EventRecorder {
 	return broadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: controllerName})
-}
-
-func cronExpressionFromFlatFile() string {
-	flatipam, _, err := config.GetFlatIPAM(true, &types.IPAMConfig{}, "")
-	if err != nil {
-		_ = logging.Errorf("could not get flatipam: %v", err)
-		os.Exit(couldNotGetFlatIPAM)
-	}
-	return flatipam.IPAM.ReconcilerCronExpression
 }
